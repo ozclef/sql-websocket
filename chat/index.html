@@ -1,0 +1,126 @@
+
+
+
+
+
+<div style="padding:12px">
+  <div id="roleLabel" class="small"></div>
+  <button id="roleToggle" class="btn secondary">Cambiar rol cliente/vendedor</button>
+</div>
+
+<div id="msgBox" style="height:320px; overflow:auto; border:1px solid rgba(0,0,0,0.08); padding:8px; margin:12px 0;"></div>
+
+<div style="display:flex; gap:8px; align-items:center">
+  <input id="msgInput" class="input" placeholder="Escribe tu mensaje..." style="flex:1" />
+  <button id="sendBtn" class="btn">Enviar</button>
+  <button id="clearBtn" class="btn secondary">Limpiar UI</button>
+</div>
+
+<!-- luego carga chat.js (el <script type="module"> anterior) -->
+
+
+<!-- necesitas el cliente oficial; lo incluyo por CDN -->
+<script type="module">
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js/+esm'
+
+const SUPABASE_URL = 'https://hxizcwxoluyayrsxsbnn.supabase.co'
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imh4aXpjd3hvbHV5YXlyc3hzYm5uIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE4ODkwMTUsImV4cCI6MjA3NzQ2NTAxNX0.yGJvUG6YXcdCXXDon9YcBESj8-Z7XPF0NLDDfTN3P6g'
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY)
+
+/* Device id (persistente por browser/device) */
+function getOrCreateDeviceId(){
+  let id = localStorage.getItem('mf_deviceId')
+  if(id) return id
+  id = (crypto && crypto.randomUUID) ? crypto.randomUUID() : ('d_' + Math.random().toString(36).slice(2,10))
+  localStorage.setItem('mf_deviceId', id)
+  return id
+}
+const DEVICE_ID = getOrCreateDeviceId()
+/* Rol simple: 'cliente' o 'vendedor' (puedes cambiar en UI) */
+let ROLE = localStorage.getItem('mf_role') || 'cliente'
+function setRole(r){ ROLE = r; localStorage.setItem('mf_role', r); renderRoleUI() }
+
+/* UI helpers: asume elementos en DOM */
+const box = document.getElementById('msgBox')
+const input = document.getElementById('msgInput')
+const sendBtn = document.getElementById('sendBtn')
+const roleToggle = document.getElementById('roleToggle')
+const clearBtn = document.getElementById('clearBtn')
+
+function appendMessage(m){
+  const d = document.createElement('div')
+  d.className = 'msg-row'
+  const time = new Date(m.created_at).toLocaleTimeString()
+  const who = (m.device_id === DEVICE_ID) ? 'Yo' : m.sender + ' • ' + m.device_id.slice(0,6)
+  d.textContent = `${time} — ${who}: ${m.content}`
+  box.appendChild(d)
+  box.scrollTop = box.scrollHeight
+}
+
+/* Escuchar mensajes en tiempo real (filtrado en cliente) */
+async function subscribeRealtime(){
+  // Suscribimos a inserts en public.messages
+  await supabase.channel('public:messages')
+    .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, payload => {
+      const m = payload.new
+      // Mostrar solo mensajes dirigidos a mi rol/dispositivo o propios
+      // Puedes ajustar la lógica: aquí mostramos todo para demo
+      appendMessage(m)
+    })
+    .subscribe()
+}
+
+/* Cargar últimos mensajes (opcional) */
+async function loadRecent(){
+  const { data, error } = await supabase
+    .from('messages')
+    .select('*')
+    .order('created_at', { ascending: true })
+    .limit(200)
+  if(error) { console.error(error); return }
+  box.innerHTML = ''
+  data.forEach(appendMessage)
+}
+
+/* Enviar mensaje */
+async function sendMessage(){
+  const content = input.value.trim()
+  if(!content) return
+  const payload = {
+    device_id: DEVICE_ID,
+    sender: ROLE,
+    receiver: ROLE === 'cliente' ? 'vendedor' : 'cliente',
+    content
+  }
+  const { error } = await supabase.from('messages').insert([payload])
+  if(error){ console.error('Error insert message', error); alert('Error al enviar') }
+  else { input.value = '' }
+}
+
+/* Botones */
+sendBtn.onclick = sendMessage
+roleToggle.onclick = () => { setRole(ROLE === 'cliente' ? 'vendedor' : 'cliente') }
+clearBtn.onclick = async () => {
+  if(!confirm('Borrar mensajes locales? (no borra la DB en Supabase)')) return
+  // sólo limpia UI local
+  box.innerHTML = ''
+}
+
+/* UI inicial */
+function renderRoleUI(){
+  const el = document.getElementById('roleLabel')
+  if(el) el.textContent = 'Rol: ' + ROLE
+}
+
+/* Iniciar */
+(async function init(){
+  renderRoleUI()
+  await loadRecent()
+  await subscribeRealtime()
+  console.log('Iniciado con deviceId:', DEVICE_ID, 'role:', ROLE)
+})()
+
+// expose small helpers for console
+window.SUPABASE = { supabase, DEVICE_ID, setRole }
+</script>
