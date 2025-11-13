@@ -1,0 +1,151 @@
+<!-- Agrega antes del script: Firebase v9 CDN -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+
+<script>
+/* =========================
+   CONFIG: Pega tu firebaseConfig aquí
+   ========================= */
+const FIREBASE_CONFIG = {
+  apiKey: "TU_APIKEY",
+  authDomain: "TU_PROYECTO.firebaseapp.com",
+  databaseURL: "https://TU_PROYECTO-default-rtdb.firebaseio.com",
+  projectId: "TU_PROYECTO",
+  storageBucket: "TU_PROYECTO.appspot.com",
+  messagingSenderId: "XXX",
+  appId: "1:XXX:web:YYY"
+};
+/* ========================= */
+
+firebase.initializeApp(FIREBASE_CONFIG);
+const db = firebase.database();
+
+/* --------- device id / login por dispositivo --------- */
+function getOrCreateDeviceId(){
+  let id = localStorage.getItem('mf_deviceId');
+  if(id) return id;
+  // prefer crypto.randomUUID si está disponible
+  if(window.crypto && crypto.randomUUID) id = crypto.randomUUID();
+  else id = 'd_' + Math.random().toString(36).slice(2,10) + '_' + Date.now().toString(36);
+  localStorage.setItem('mf_deviceId', id);
+  return id;
+}
+
+function setDisplayName(name){
+  localStorage.setItem('mf_displayName', name);
+  return name;
+}
+function getDisplayName(){ return localStorage.getItem('mf_displayName') || getOrCreateDeviceId().slice(0,8); }
+
+/* registrar device en /users */
+function registerDevice(){
+  const deviceId = getOrCreateDeviceId();
+  const displayName = getDisplayName();
+  db.ref('users/' + deviceId).set({
+    deviceId,
+    displayName,
+    createdAt: Date.now()
+  }).catch(e => console.warn('No se pudo registrar usuario:', e));
+}
+
+/* --------- helpers de chat --------- */
+function chatIdFor(a,b){
+  // ordenar para consistencia
+  if(a === b) return a + '_' + b;
+  return [a,b].sort().join('_');
+}
+
+/* enviar mensaje entre devices */
+function sendMessageTo(deviceTo, text){
+  const from = getOrCreateDeviceId();
+  const to = deviceTo;
+  const chat = chatIdFor(from, to);
+  const msgRef = db.ref('chats/' + chat + '/messages').push();
+  const payload = { from, to, text: String(text), ts: Date.now() };
+  return msgRef.set(payload).then(()=>{
+    // marcar meta y user-chats
+    db.ref('chats/' + chat + '/meta').update({ lastTs: Date.now() });
+    db.ref('user-chats/' + from + '/' + chat).set(true);
+    db.ref('user-chats/' + to + '/' + chat).set(true);
+  });
+}
+
+/* escuchar mensajes de un chat (callback recibe mensaje) */
+function listenChat(withDeviceId, onMessage){
+  const me = getOrCreateDeviceId();
+  const chat = chatIdFor(me, withDeviceId);
+  const ref = db.ref('chats/' + chat + '/messages');
+  // escuchar nuevos children
+  ref.off(); // quitar listeners previos si hubieran
+  ref.on('child_added', snap => {
+    const m = snap.val();
+    if(!m) return;
+    onMessage(m);
+  });
+  return () => ref.off();
+}
+
+/* listar chats del usuario (retorna promesa con lista de chatIds) */
+function listMyChats(){
+  const me = getOrCreateDeviceId();
+  return db.ref('user-chats/' + me).once('value').then(snap => {
+    const data = snap.val() || {};
+    return Object.keys(data);
+  });
+}
+
+/* obtener lista de participantes de un chat */
+function getChatParticipants(chatId){
+  return db.ref('chats/' + chatId + '/meta/participants').once('value').then(s=>s.val());
+}
+
+/* util UI demo: escuchar mensajes y mostrar */
+function startChatUI(withDevice){
+  // asegurarse registrado
+  registerDevice();
+  listenChat(withDevice, (m) => {
+    console.log('mensaje recibido:', m);
+    // aquí actualizas tu DOM: agregar bubble, etc.
+    // Ejemplo simple:
+    const area = document.querySelector('#chat-stream') || createSimpleChatArea();
+    const el = document.createElement('div');
+    el.textContent = `${m.from === getOrCreateDeviceId() ? 'YO' : m.from}: ${m.text}`;
+    area.appendChild(el);
+    area.scrollTop = area.scrollHeight;
+  });
+}
+
+/* función rápida para crear área de chat demo si no existe */
+function createSimpleChatArea(){
+  let area = document.querySelector('#chat-stream');
+  if(area) return area;
+  area = document.createElement('div');
+  area.id = 'chat-stream';
+  area.style.maxHeight = '300px';
+  area.style.overflowY = 'auto';
+  area.style.border = '1px solid #ddd';
+  area.style.padding = '8px';
+  const container = document.querySelector('#aside-right') || document.body;
+  container.appendChild(area);
+  return area;
+}
+
+/* --------------- iniciar demo --------------- */
+(function init(){
+  const id = getOrCreateDeviceId();
+  registerDevice();
+  // muestra device id en consola (para compartir con vendedor)
+  console.log('DeviceId:', id, 'displayName:', getDisplayName());
+})();
+
+/* Exportar funciones al window para uso directo desde botones inline */
+window.mf = {
+  getDeviceId: getOrCreateDeviceId,
+  setDisplayName,
+  sendMessageTo,
+  listenChat,
+  listMyChats,
+  registerDevice,
+  startChatUI
+};
+</script>
